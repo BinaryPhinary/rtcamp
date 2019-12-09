@@ -1,0 +1,392 @@
+#!/bin/bash
+
+
+# Check if PHP, Mysql & Nginx are installed. If not present, install the missing packages
+# Ask the user for a domain name We will assume that the user enters "example.com"
+# Create a /etc/hosts entry for example.com pointing to localhost
+# Create an nginx config file for example.com
+# Download the latest WordPress version and unzip it locally in example.com document root (Hint: Use http://wordpress.org/latest.zip)
+# Create a new Mysql database for WordPress with name “example.com_db”
+# Create a wp-config.php with proper DB configuration (Hint: You can use wp-config-sample.php as your template)
+# Fix any file permissions, clean up temporary files and restart/reload Nginx config
+# Prompt the user to open example.com in a browser if all goes well
+
+
+# First make an announcement and check to see if the applications are installed
+
+echo "This script will setup a wordpress Webserver for you with minimal interaction required from you."
+echo " "
+echo "There are pre-requisites for the installation to be successful which we will now check" 
+echo " "
+sleep 2s
+# Preparation for calling a director to store the wordpress zip file
+download_dir=~/tmp
+
+# Creating functions which can be called to determine if the applications are installed or not.
+# I used type because it is a basic OS function that comes with most linux distro's. 
+# Argument -y was inserted to bypass user prompt during the installation process
+# Assumption that php7.2 will be used - if the version changes, then the script will need to be updated
+# It is likely possibly to query for the latest version of PHP from apt-cache search and then
+# insert as a variable into the script - however there was no request for this approach
+
+function apt_php () {
+if ! [[ "$(type php)" ]] > /dev/null 2>&1 ; then
+	sudo apt-get -y install php7.2-fpm php7.2-common php7.2-mbstring php7.2-xmlrpc php7.2-gd php7.2-xml php7.2-mysql php7.2-cli php7.2-zip php7.2-curl
+fi
+}
+
+function apt_mysql () {
+if ! [[ "$(type mysql)" ]] > /dev/null 2>&1 ; then
+	sudo apt-get -y install mysql-server 
+fi
+}
+
+function apt_nginx () {
+if ! [[ "$(type nginx)" ]] > /dev/null 2>&1; then
+	sudo apt-get -y install nginx 
+fi
+}
+
+# Check to see if the applications are installed, and then let the user know whether installation needs to occur or not
+# Also giving the option to abort the install or not proceed with it
+
+if [[ "$(type php)" ]] > /dev/null 2>&1 && [[ "$(type mysql)" ]] > /dev/null 2>&1 && [ "$(type nginx)" ] > /dev/null 2>&1 ; then
+	echo "The necessary components are installed on your system - good! We can proceed with the webserver setup"
+	echo " "
+else 
+	echo "Some components are missing and we will now need to install them.  You will need sudo access to do so."
+	echo "Would you like to proceed? (y/n)  y will continue, n will exit.  All other keys will exit the script"
+
+read install
+
+if [[ -z "$install" ]] || [[ $install == *"n"* ]] || [[ $install != *"y"* ]] ; then
+	exit 1
+  fi
+fi
+
+case $install in
+	Y | y | Yes | yes | YES)	sudo apt-get update; apt_mysql; apt_nginx; apt_php;;
+	N | n | No  | no  | NO) 	echo "Exiting script as we cannot proceed"; exit;;
+esac
+
+# This section deals with setting up the mysql_secure_installation utility.  After install it should be run
+# but doesnt necessarily need to be run
+
+echo " "
+echo "Do you need to setup the mysql-server root password and other basic configs? (y/n)"
+echo "y will start the utility.  n will continue the script without entering the utility"
+echo " "
+echo "Any other key will exit the script"
+echo " "
+
+read mysql_util
+
+
+
+case $mysql_util in
+	Y | y | Yes | yes | YES)	sudo mysql_secure_installation utility;;
+	N | n | No  | no  | NO) 	echo "By-passing the secure installation utility.";; 
+			     *)		exit 1
+esac
+
+# Checking again to ensure installation was completed, and no components are missing
+# if this test passes, then we proceed to requesting a domain name
+
+if [[ "$(type php)" ]] && [[ "$(type mysql)" ]] && [[ "$(type nginx)" ]] ; then
+	echo " "
+	echo "What is your desired domain name?"
+	read domain
+else
+	echo "Some applications do not appear to have installed correctly.  Exiting"
+	exit 1
+fi
+
+# Storing the domain as alt_domain parse out the domain name from the extension
+alt_domain=$domain
+
+# updating the host file - this inserts under the hostname the desired domain name and the local ip of 127.
+# this was done so that the domain name was not inserted in the ipv6 portion of the host file
+sudo sed -i "/${HOSTNAME}/a 127.0.0.1	 ${domain}" /etc/hosts
+
+# Sites available file - adding the .conf extension to the domain name
+sa_file=$domain.conf
+
+# The assignment calls to create a database with the name example.com_db - however mysql prohibits the creation of a database with a '.' in it.
+# Therefore I have split the domain name into two portions, the prefix and suffix.  From the pre-fix I will create the database name
+# The database will essentially bye named $domain_prefix_db (ie: example_db)
+
+domain_prefix=${alt_domain%.*}
+
+echo $domain_prefix
+
+
+# In order to produce the configuration file, I decided to insert the config wholesale rather than attempting to rename and edit the file in place.
+# This is because numerous awk or sed statements would be quite time consuming to produce, and does not get any advantage over wholesale inserting the
+# config file.  In order to solve the problem with user input into what the server name/domain name should be - I have elected to use sed statements to insert an
+# update to this file.
+
+sudo tee /etc/nginx/sites-available/"${sa_file}" > /dev/null << 'TXT'
+
+server {
+        listen 80 default_server;
+        listen [::]:80 default_server;
+
+        # SSL configuration
+        #
+        # listen 443 ssl default_server;
+        # listen [::]:443 ssl default_server;
+        #
+        # Note: You should disable gzip for SSL traffic.
+        # See: https://bugs.debian.org/773332
+        #
+        # Read up on ssl_ciphers to ensure a secure configuration.
+        # See: https://bugs.debian.org/765782
+        #
+        # Self signed certs generated by the ssl-cert package
+        # Don't use them in a production server!
+        #
+        # include snippets/snakeoil.conf;
+
+        root /var/www/html;
+
+        # Add index.php to the list if you are using PHP
+        index index.php index.html index.htm index.nginx-debian.html;
+
+        server_name example.com;
+
+        location / {
+                # First attempt to serve request as file, then
+                # as directory, then fall back to displaying a 404.
+                try_files $uri $uri/ =404;
+        }
+
+        # pass the PHP scripts to FastCGI server listening on 127.0.0.1:9000
+        #
+        location ~ \.php$ {
+                include snippets/fastcgi-php.conf;
+        #
+        #       # With php7.0-cgi alone:
+        #       fastcgi_pass 127.0.0.1:9000;
+        #       # With php7.0-fpm:
+                fastcgi_pass unix:/run/php/php7.2-fpm.sock;
+        }
+
+        # deny access to .htaccess files, if Apache's document root
+        # concurs with nginx's one
+        #
+        location ~ /\.ht {
+                deny all;
+        }
+}
+
+
+# Virtual Host configuration for example.com
+#
+# You can move that to a different file under sites-available/ and symlink that
+# to sites-enabled/ to enable it.
+#
+#server {
+#       listen 80;
+#       listen [::]:80;
+#
+#       server_name example.com;
+#
+#       root /var/www/example.com;
+#       index index.html;
+#
+#       location / {
+#               try_files $uri $uri/ =404;
+#       }
+#}
+
+TXT
+
+# Creating symbolic link between sites-avilable and sites-enabled  - as nginx requires
+cd /etc/nginx/sites-enabled/
+sudo ln -v -s /etc/nginx/sites-available/"${sa_file}" > /dev/null 2>&1
+
+# various updates to the sites-available configuration file
+sudo sed -i "s/example.com/${domain}/g" /etc/nginx/sites-available/"${sa_file}" > /dev/null 2>&1
+
+sudo sed -i "s/\/var\/www\/html/\/var\/www\/${domain}/g" /etc/nginx/sites-available/"${sa_file}" > /dev/null 2>&1
+
+# Removing the default file from the /etc/nginx/sites-available and /etc/nginx/sites-enabled dirs
+sudo rm /etc/nginx/sites-available/default > /dev/null 2>&1
+
+sudo rm /etc/nginx/sites-enabled/default > /dev/null 2>&1
+
+# Creating download directory to put the wordpress zip in
+sudo mkdir -p ${download_dir}
+
+# Now to get the wordpress files. 
+
+sudo wget --content-disposition -E -c https://wordpress.org/latest.zip -P $download_dir
+
+sudo unzip $download_dir/wordpress*.zip -d  /$download_dir >/dev/null
+
+# Creating the root directory for the wordpress files and copying over the files
+sudo mkdir /var/www/${domain}
+
+cd /$download_dir/wordpress
+
+sudo mv /$download_dir/wordpress/*  /var/www/${domain} >/dev/null
+
+sudo rm -rf /$download_dir
+
+# Restarting the nginx service
+sudo systemctl restart nginx 2>/dev/null
+
+# mysql appears to have a bug/error where it will not save the password set into the mysql_secure_installation utility.
+# The only option appears to use sudo in order to force login and update the database with the correct password
+# which is the ALTER USER statement below.  However - there is no point in taking this course if the users root password
+# works fine - which is what the test below does.  First check to see if their root password works in mysql or not, and if
+# it doesnt, force reset it to a new desired password.  Only in this way can I create the database below
+
+echo " " 
+echo "Due to an issue within the mysql installation utility - we will need to verify your root password is set, and if not"
+echo "we will need to manually update your mysql root password"
+echo " "
+echo "Please enter your current mysql root password.  Please note that you can change it after this script is completed"
+read -s mysqloldroot 
+# Makes a temporary file for which we will store the output of our test
+TMP=$(mktemp)
+
+# We run this test to show a database using what we think should be the users root password - which they typed in above.
+# The output of the test is stored via tee into the $TMP file, then we cat it and look for the word "ERROR".
+# If we find "ERROR" then we ask the user to reset their password as obviously their root password does not work
+
+mysql -u root -p${mysqloldroot} -e 'SHOW DATABASES;' 2>&1 | tee $TMP > /dev/null
+
+OUTPUT=$(cat $TMP)
+
+if [[ "${OUTPUT}" == *"ERROR"* ]] ; then
+	echo "Your root password is currently not set.  We will now fix this issue so that the installation can proceed."
+	echo " "
+	echo "Please enter your desired root password."
+	mysqloldroot=no
+	read -s mysqlnewroot
+	echo "Please enter it a second time."
+	read -s mysqlnewroot2
+sudo mysql -u root -p${mysqlnewroot} -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${mysqlnewroot}'"
+
+else
+	echo "Your root password is working.  We can proceed"
+fi
+
+# If the user entered a new password we want to make sure it was the same/typed correctly - thus we do a compare on it.
+# If the passwords do not match, we ask them to do it again
+
+if [ "$mysqlnewroot" == "$mysqlnewroot2" ] ; then
+	echo "Passwords match, we can continue"
+else
+	echo "Your passwords do not match.  Please try again."
+	echo "Please enter your desired root password."
+read -s mysqlnewroot
+	echo "Please enter it a second time."
+read -s mysqlnewroot 2
+fi
+
+if ! [ "$mysqlnewroot" == "$mysqlnewroot2" ] ; then
+	echo "Your passwords still do not match.  Exiting"
+	exit 1
+fi
+
+# Now that we have a validated root password for mysql we can begin the setup
+
+echo  " "
+echo "The database setup will now begin"
+echo " "
+echo "Please enter a username for the db"
+read username
+
+# As per the above - example.com_db cannot be created.  Thus I have chosen a different path to use example_db
+
+# create random password that meets the strong password policy
+# Also,  we're preparing to look for errors in the DB setup process in the event that the user typed in a wrong password
+# somewhere along the way.  At this point, given the way the script has been written - it is highly unlikely - because we
+# stored it above.  However - given that this script could be used independently of the check above, it made sense to also include
+# this error checking in this part of the script
+PASSWDDB="$(cat /dev/urandom | tr -dc 'a-zA-Z0-9-_!@#$%^&*()_+{}|:<>?=' | fold -w 10 | grep -i '[0-9!@#$%^&*()_+{}|:<>?=]'| head -n 1)"
+TMP=$(mktemp)
+OUTPUT=$(cat $TMP)
+
+# If /root/.my.cnf exists then it won't ask for root password
+if [ -f /root/.my.cnf ]; then
+
+    mysql -e "CREATE DATABASE ${domain_prefix}_db /*\!40100 DEFAULT CHARACTER SET utf8 */;"
+    mysql -e "CREATE USER ${domain_prefix}_db@localhost IDENTIFIED BY '${PASSWDDB}';"
+    mysql -e "GRANT ALL PRIVILEGES ON ${domain_prefix}_db.* TO '${domain_prefix}_db'@'localhost';"
+    mysql -e "FLUSH PRIVILEGES;"
+
+# If /root/.my.cnf doesn't exist then it'll ask for root password   
+else
+
+# Previous versions of this script asked the user to enter the mysql root password again - given that there are 3 possible values of the root password
+# in this script, however I amended the script to evaluate whether the user created a new password, or had an existing password that worked in order to
+# remove a request for the root password again before starting this part of the script.  First we check to see if the user bypassed typing in a 
+# mysql root password - which is mysqloldroot.  If they did, then we assume it must be mysqlnewroot. 
+
+	if [[ $mysqloldroot == *"no"*  ]] ; then
+		echo "Creating the database based on your domain name selection"    
+  		mysql -u root -p${mysqlnewroot} -e "CREATE DATABASE ${domain_prefix}_db /*\!40100 DEFAULT CHARACTER SET utf8 */;" > /dev/null 2<&1
+			if [[ "${OUTPUT}" == *"ERROR"* ]] ; then
+				echo "Your root password is incorrect.  Exiting.  You will need to run the script again"
+				exit 1
+				sudo rm $TMP
+			fi
+		sleep 1s
+		echo "Creating the user based on your selection"
+		mysql -u root -p${mysqlnewroot} -e "CREATE USER ${username}@localhost IDENTIFIED BY '${PASSWDDB}';" > /dev/null 2<&1
+		sleep 1s
+		echo "Granting privileges on the DB"
+		mysql -u root -p${mysqlnewroot} -e "GRANT ALL PRIVILEGES ON ${domain_prefix}_db.* TO "${username}@localhost";" > /dev/null 2<&1
+		echo "Cleaning up.....just about done" 
+   		mysql -u root -p${mysqlnewroot} -e "FLUSH PRIVILEGES;" > /dev/null 2<&1
+		echo "Beep Boop.  Robot done.  Database built."
+else
+
+	echo "Creating the database based on your domain name selection"
+	mysql -u root -p${mysqloldroot} -e "CREATE DATABASE ${domain_prefix}_db /*\!40100 DEFAULT CHARACTER SET utf8 */;" > /dev/null 2<&1
+		if [[ "${OUTPUT}" == *"ERROR"* ]] ; then
+			echo "Your root password is incorrect.  Exiting.  You will need to run the script again"
+			exit 1
+			sudo rm $TMP
+		fi 
+	sleep 1s
+	echo "Creating the user based on your selection"
+	mysql -u root -p${mysqloldroot} -e "CREATE USER ${username}@localhost IDENTIFIED BY '${PASSWDDB}';" > /dev/null 2>&1
+ 	sleep 1s
+	mysql -u root -p${mysqloldroot} -e "GRANT ALL PRIVILEGES ON ${domain_prefix}_db.* TO "${username}@localhost";" > /dev/null 2<&1
+	echo "Cleaning up......just about done"
+	mysql -u root -p${mysqloldroot} -e "FLUSH PRIVILEGES;" > /dev/null 2<&1
+	echo "Beep. Boop.  Robot done.  Database built."
+
+ fi
+fi
+echo "Your username is $username"
+echo "Your password is $PASSWDDB"
+
+#Now to create and configure the wp-config.php, and then to modify it based on our inputs
+
+sudo cp /var/www/${domain}/wp-config-sample.php /var/www/${domain}/wp-config.php
+
+sudo sed -i "s/database_name_here/${domain_prefix}_db/g" /var/www/${domain}/wp-config.php
+
+sudo sed -i "s/username_here/${username}/g" /var/www/${domain}/wp-config.php
+
+sudo sed -i "s/\bpassword_here\b/${PASSWDDB}/g" /var/www/${domain}/wp-config.php
+
+sudo perl -i -pe'
+  BEGIN {
+    @chars = ("a" .. "z", "A" .. "Z", 0 .. 9);
+    push @chars, split //, "!@#$%^&*()-_ []{}<>~\`+=,.;:/?|";
+    sub salt { join "", map $chars[ rand @chars ], 1 .. 64 }
+  }
+  s/put your unique phrase here/salt()/ge
+' /var/www/${domain}/wp-config.php
+
+sudo systemctl restart nginx
+
+echo "Your website is now setup.  Please open a browser on the localhost and proceed to ${domain}"
+echo "If you however are not on the localhost where the website was installed, please use the IP"
+echo "address unless you have appended your domain appropriately." 
